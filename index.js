@@ -1,5 +1,5 @@
 // server.js
-const express = require('express')
+const express = require('express');
 const cors = require('cors');
 const app = express();
 require('dotenv').config();
@@ -8,23 +8,24 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 const crypto = require('crypto');
 const admin = require("firebase-admin");
 
-const port = process.env.PORT || 3000
+const port = process.env.PORT || 3000;
 
-// Firebase setup
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+// -------------------- FIREBASE SETUP --------------------
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8');
 const serviceAccount = JSON.parse(decoded);
+
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
-})
+});
 
-// Middleware
+// -------------------- MIDDLEWARE --------------------
 app.use(express.json());
 app.use(cors());
 
 // Firebase token verification
 const verifyFBToken = async (req, res, next) => {
     const token = req.headers.authorization;
-    if (!token) return res.status(401).send({ message: 'unauthorized access' })
+    if (!token) return res.status(401).send({ message: 'unauthorized access' });
 
     try {
         const idToken = token.split(' ')[1];
@@ -32,18 +33,14 @@ const verifyFBToken = async (req, res, next) => {
         req.decoded_email = decoded.email;
         next();
     } catch (err) {
-        return res.status(401).send({ message: 'unauthorized access' })
+        return res.status(401).send({ message: 'unauthorized access' });
     }
-}
+};
 
-// MongoDB setup
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.maurhd8.mongodb.net/?appName=Cluster0`
+// -------------------- DATABASE --------------------
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.maurhd8.mongodb.net/?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-    }
+    serverApi: { version: ServerApiVersion.v1, strict: true }
 });
 
 // Tracking ID generator
@@ -54,199 +51,231 @@ function generateTrackingId() {
     return `${prefix}-${date}-${random}`;
 }
 
+// -------------------- MAIN FUNCTION --------------------
 async function run() {
-    try {
-        await client.connect();
+    await client.connect();
+    const db = client.db('simpleUser');
+    const userCollection = db.collection('users');
+    const productsCollection = db.collection('products');
+    const bookingsCollection = db.collection('bookings');
+    const trackingsCollection = db.collection('trackings');
 
-        const db = client.db('simpleUser');
-        const userCollection = db.collection('users');
-        const parcelsCollection = db.collection('parcels');
-        const paymentCollection = db.collection('payments');
-        const ridersCollection = db.collection('riders');
-        const trackingsCollection = db.collection('trackings');
-        const productsCollection = db.collection('products');
-        const bookingsCollection = db.collection('bookings');
-
-        // Admin & Rider verification middleware
-        const verifyAdmin = async (req, res, next) => {
-            const email = req.decoded_email;
-            const user = await userCollection.findOne({ email });
-            if (!user || user.role !== 'admin') return res.status(403).send({ message: 'forbidden access' });
-            next();
+    // ---------------- ADMIN CHECK ----------------
+    const verifyAdmin = async (req, res, next) => {
+        const email = req.decoded_email;
+        const user = await userCollection.findOne({ email });
+        if (!user || user.role !== 'admin') {
+            return res.status(403).send({ message: 'forbidden access' });
         }
-        const verifyRider = async (req, res, next) => {
-            const email = req.decoded_email;
-            const user = await userCollection.findOne({ email });
-            if (!user || user.role !== 'rider') return res.status(403).send({ message: 'forbidden access' });
-            next();
-        }
+        next();
+    };
 
-        // Log tracking
-        const logTracking = async (trackingId, status) => {
-            const log = { trackingId, status, details: status.split('_').join(' '), createdAt: new Date() }
-            return await trackingsCollection.insertOne(log);
-        }
+    // -------------------- USERS API --------------------
+    // Get all users (Admin only) with search, filter, pagination
+    app.get('/users/admin', verifyFBToken, verifyAdmin, async (req, res) => {
+        const { page = 1, limit = 10, search = "", role = "" } = req.query;
+        const query = {};
+        if (search) query.$or = [
+            { name: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } }
+        ];
+        if (role) query.role = role;
 
-        // ---------- PRODUCTS API ----------
-        app.get('/products', async (req, res) => {
-            const query = {};
-            const { featured, limit, category, search } = req.query;
+        const users = await userCollection.find(query)
+            .skip((page - 1) * limit)
+            .limit(parseInt(limit))
+            .toArray();
 
-            if (featured === 'true') query.showOnHome = true;
-            if (category) query.category = category;
-            if (search) {
-                query.$or = [
-                    { name: { $regex: search, $options: 'i' } },
-                    { shortDesc: { $regex: search, $options: 'i' } },
-                    { category: { $regex: search, $options: 'i' } }
-                ];
+        const total = await userCollection.countDocuments(query);
+        res.send({ users, total });
+    });
+
+    // Update user role or suspend reason
+    app.patch('/users/admin/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+        const id = req.params.id;
+        const { role, suspendReason } = req.body;
+
+        const updateDoc = {};
+        if (role) updateDoc.role = role;
+        if (suspendReason) updateDoc.suspendReason = suspendReason;
+
+        const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+        res.send(result);
+    });
+
+    // -------------------- PRODUCTS API --------------------
+    // Get all products
+    app.get('/products', async (req, res) => {
+        const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
+        console.log(result);
+        res.send(result);
+    });
+
+    // Get single product
+    app.get('/products/:id', async (req, res) => {
+        const id = req.params.id;
+        const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+        res.send(product);
+    });
+
+    // Admin/Manager: get all products with pagination, search, filter
+    app.get('/products/admin', verifyFBToken, async (req, res) => {
+        const { page = 1, limit = 10, search = "", category = "" } = req.query;
+        const query = {};
+        if (search) query.$or = [
+            { name: { $regex: search, $options: 'i' } },
+            { description: { $regex: search, $options: 'i' } }
+        ];
+        if (category) query.category = category;
+
+        const products = await productsCollection.find(query)
+            .skip((page - 1) * limit)
+            .limit(parseInt(limit))
+            .toArray();
+
+        const total = await productsCollection.countDocuments(query);
+        res.send({ products, total });
+    });
+
+    // Add product (Manager only)
+    app.post('/products', verifyFBToken, async (req, res) => {
+        const email = req.decoded_email;
+        const user = await userCollection.findOne({ email });
+        if (!user || user.role !== 'manager') return res.status(403).send({ message: 'forbidden' });
+
+        const product = req.body;
+        product.createdBy = email;
+        product.createdAt = new Date();
+        const result = await productsCollection.insertOne(product);
+        res.send(result);
+    });
+
+    // Update product
+    app.patch('/products/:id', verifyFBToken, async (req, res) => {
+        const id = req.params.id;
+        const updateDoc = req.body;
+        const result = await productsCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+        res.send(result);
+    });
+
+    // Delete product
+    app.delete('/products/:id', verifyFBToken, async (req, res) => {
+        const id = req.params.id;
+        const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+    });
+
+    // -------------------- BOOKINGS API --------------------
+    // Create booking
+    app.post('/bookings', verifyFBToken, async (req, res) => {
+        try {
+            const booking = req.body;
+            if (!booking.userEmail || !booking.productId || !booking.orderQty) {
+                return res.status(400).send({ message: 'Missing required booking fields' });
             }
 
-            const cursor = productsCollection.find(query).sort({ createdAt: -1 });
-            if (limit) cursor.limit(parseInt(limit));
-            const result = await cursor.toArray();
-            res.send(result);
-        });
+            // Check if user suspended
+            const user = await userCollection.findOne({ email: booking.userEmail });
+            if (user?.suspendReason) return res.status(403).send({ message: 'You are suspended: ' + user.suspendReason });
 
-        app.get('/products/:id', async (req, res) => {
-            const id = req.params.id;
-            const product = await productsCollection.findOne({ _id: new ObjectId(id) });
-            res.send(product);
-        });
+            booking.trackingId = generateTrackingId();
+            booking.status = "pending";
+            booking.createdAt = new Date();
 
-        app.post('/products', verifyFBToken, async (req, res) => {
-            const product = req.body;
-            product.createdAt = new Date();
-            const result = await productsCollection.insertOne(product);
-            res.send(result);
-        });
+            const result = await bookingsCollection.insertOne(booking);
 
-        app.patch('/products/:id', verifyFBToken, async (req, res) => {
-            const id = req.params.id;
-            const updateInfo = req.body;
-            const result = await productsCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateInfo });
-            res.send(result);
-        });
+            await trackingsCollection.insertOne({
+                trackingId: booking.trackingId,
+                status: "booking_created",
+                createdAt: new Date()
+            });
 
-        app.delete('/products/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-            const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
-            res.send(result);
-        });
+            res.send({
+                message: "Booking created",
+                insertedId: result.insertedId,
+                trackingId: booking.trackingId
+            });
+        } catch (err) {
+            console.log("BOOKING ERROR:", err);
+            res.status(500).send({ message: "Internal server error" });
+        }
+    });
 
-        // ---------- USERS API ----------
-        app.get('/users', verifyFBToken, async (req, res) => {
-            const searchText = req.query.searchText;
-            const query = {};
-            if (searchText) {
-                query.$or = [
-                    { displayName: { $regex: searchText, $options: 'i' } },
-                    { email: { $regex: searchText, $options: 'i' } },
-                ];
-            }
-            const cursor = userCollection.find(query).sort({ createdAt: -1 }).limit(5);
-            const result = await cursor.toArray();
-            res.send(result);
-        });
+    // Get bookings for logged-in user
+    app.get('/bookings', verifyFBToken, async (req, res) => {
+        const email = req.decoded_email;
+        const bookings = await bookingsCollection.find({ userEmail: email }).sort({ createdAt: -1 }).toArray();
+        res.send(bookings);
+    });
 
-        app.get('/users/:email/role', async (req, res) => {
-            const email = req.params.email;
-            const user = await userCollection.findOne({ email });
-            res.send({ role: user?.role || 'user' });
-        });
+    // Admin/Manager: get all bookings with search, filter, pagination
+    app.get('/bookings/admin', verifyFBToken, async (req, res) => {
+        const { page = 1, limit = 10, status = "", search = "" } = req.query;
+        const query = {};
+        if (status) query.status = status;
+        if (search) query.$or = [
+            { productTitle: { $regex: search, $options: 'i' } },
+            { userEmail: { $regex: search, $options: 'i' } }
+        ];
 
-        app.post('/users', async (req, res) => {
-            const user = req.body;
-            user.role = 'user';
-            user.createdAt = new Date();
-            const email = user.email;
-            const exists = await userCollection.findOne({ email });
-            if (exists) return res.send({ message: 'user exists' });
-            const result = await userCollection.insertOne(user);
-            res.send(result);
-        });
+        const bookings = await bookingsCollection.find(query)
+            .skip((page - 1) * limit)
+            .limit(parseInt(limit))
+            .sort({ createdAt: -1 })
+            .toArray();
 
-        app.patch('/users/:id/role', verifyFBToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-            const { role } = req.body;
-            const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: { role } });
-            res.send(result);
-        });
+        const total = await bookingsCollection.countDocuments(query);
+        res.send({ bookings, total });
+    });
 
-        // ---------- BOOKINGS API ----------
-        app.post('/bookings', verifyFBToken, async (req, res) => {
-            try {
-                const booking = req.body;
+    // -------------------- TRACKING API --------------------
+    app.get('/trackings/:trackingId', verifyFBToken, async (req, res) => {
+        const trackingId = req.params.trackingId;
+        const trackings = await trackingsCollection.find({ trackingId }).sort({ createdAt: 1 }).toArray();
+        res.send(trackings);
+    });
 
-                // Validation
-                if (!booking.userEmail || !booking.productId || !booking.orderQty) {
-                    return res.status(400).send({ message: 'Missing required booking fields' });
-                }
-
-                // Generate tracking ID
-                booking.trackingId = generateTrackingId();
-                booking.status = 'pending';
-                booking.createdAt = new Date();
-
-                const result = await bookingsCollection.insertOne(booking);
-
-                // Log initial tracking
-                await trackingsCollection.insertOne({
-                    trackingId: booking.trackingId,
-                    status: 'booking_created',
-                    details: 'Booking created',
-                    createdAt: new Date()
-                });
-
-                res.send({
-                    message: 'Booking created',
-                    insertedId: result.insertedId,
-                    trackingId: booking.trackingId
-                });
-            } catch (err) {
-                console.log("Booking Error:", err);
-                res.status(500).send({ message: 'Internal server error' });
-            }
-        });
-
-        // ---------- OPTIONAL: Stripe Checkout ----------
-        app.post('/create-checkout-session', async (req, res) => {
-            const { cost, bookingId, productTitle } = req.body;
-
-            if (!cost || !bookingId) {
-                return res.status(400).send({ message: 'Missing cost or bookingId' });
+    // -------------------- CREATE STRIPE CHECKOUT --------------------
+    app.post('/create-checkout-session', async (req, res) => {
+        try {
+            const { cost, bookingId, productTitle, userEmail } = req.body;
+            if (!cost || !bookingId || !productTitle || !userEmail) {
+                return res.status(400).send({ message: 'Missing required fields' });
             }
 
             const session = await stripe.checkout.sessions.create({
                 payment_method_types: ['card'],
-                line_items: [{
-                    price_data: {
-                        currency: 'usd',
-                        product_data: { name: productTitle },
-                        unit_amount: cost * 100,
-                    },
-                    quantity: 1
-                }],
-                mode: 'payment',
+                line_items: [
+                    {
+                        price_data: {
+                            currency: 'usd',
+                            product_data: { name: productTitle },
+                            unit_amount: cost * 100,
+                        },
+                        quantity: 1,
+                    }
+                ],
+                mode: "payment",
                 success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
                 cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
             });
 
             res.send({ url: session.url });
-        });
+        } catch (err) {
+            console.log("STRIPE ERROR:", err);
+            res.status(500).send({ message: "Stripe session failed" });
+        }
+    });
 
-        await client.db("admin").command({ ping: 1 });
-        console.log("MongoDB connected successfully!");
-    } finally {
-        // optional: keep client connected
-    }
+    console.log("Database connected!");
 }
 
-run().catch(console.dir);
+run().catch(console.error);
 
+// -------------------- ROOT ROUTE --------------------
 app.get('/', (req, res) => {
-    res.send('Server is running!')
-})
+    res.send('Server is running!');
+});
 
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
