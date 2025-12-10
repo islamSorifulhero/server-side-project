@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const app = express();
@@ -60,6 +59,7 @@ async function run() {
     const bookingsCollection = db.collection('bookings');
     const trackingsCollection = db.collection('trackings');
 
+
     // ---------------- ADMIN CHECK ----------------
     const verifyAdmin = async (req, res, next) => {
         const email = req.decoded_email;
@@ -69,6 +69,12 @@ async function run() {
         }
         next();
     };
+
+    app.post("/users", async(req, res) => {
+        const userData = req.body
+        const result = await userCollection.insertOne(userData)
+        res.send(result);
+    })
 
     // -------------------- USERS API --------------------
     // Get all users (Admin only) with search, filter, pagination
