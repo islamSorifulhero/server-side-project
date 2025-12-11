@@ -9,7 +9,6 @@ const admin = require("firebase-admin");
 
 const port = process.env.PORT || 3000;
 
-// -------------------- FIREBASE SETUP --------------------
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8');
 const serviceAccount = JSON.parse(decoded);
 
@@ -17,11 +16,9 @@ admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
 
-// -------------------- MIDDLEWARE --------------------
 app.use(express.json());
 app.use(cors());
 
-// Firebase token verification
 const verifyFBToken = async (req, res, next) => {
     const token = req.headers.authorization;
     if (!token) return res.status(401).send({ message: 'unauthorized access' });
@@ -36,13 +33,11 @@ const verifyFBToken = async (req, res, next) => {
     }
 };
 
-// -------------------- DATABASE --------------------
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.maurhd8.mongodb.net/?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
     serverApi: { version: ServerApiVersion.v1, strict: true }
 });
 
-// Tracking ID generator
 function generateTrackingId() {
     const prefix = "PRCL";
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
@@ -50,7 +45,6 @@ function generateTrackingId() {
     return `${prefix}-${date}-${random}`;
 }
 
-// -------------------- MAIN FUNCTION --------------------
 async function run() {
     await client.connect();
     const db = client.db('simpleUser');
@@ -59,7 +53,6 @@ async function run() {
     const bookingsCollection = db.collection('bookings');
     const trackingsCollection = db.collection('trackings');
 
-    // ---------------- ADMIN CHECK ----------------
     const verifyAdmin = async (req, res, next) => {
         const email = req.decoded_email;
         const user = await userCollection.findOne({ email });
@@ -69,14 +62,12 @@ async function run() {
         next();
     };
 
-    // -------------------- USERS API --------------------
     app.post("/users", async (req, res) => {
         const userData = req.body
         const result = await userCollection.insertOne(userData)
         res.send(result);
     })
 
-    // -------------------- PRODUCTS API --------------------
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
         res.send(result);
@@ -88,32 +79,25 @@ async function run() {
         res.send(product);
     });
 
-    // -------------------- BOOKINGS API --------------------
     app.post('/bookings', verifyFBToken, async (req, res) => {
         try {
             const booking = req.body;
             const userEmail = booking.userEmail;
 
-            // check required fields
             if (!userEmail || !booking.productId || !booking.orderQty) {
                 return res.status(400).send({ message: 'Missing required booking fields' });
             }
 
-            // fetch user
             const user = await userCollection.findOne({ email: userEmail });
             if (!user) return res.status(404).send({ message: "User not found" });
 
-            // check if suspended
             if (user.suspendReason) return res.status(403).send({ message: 'You are suspended: ' + user.suspendReason });
 
-            // check role (only buyer)
             if (user.role !== 'buyer') return res.status(403).send({ message: 'Only buyers can place orders' });
 
-            // fetch product
             const product = await productsCollection.findOne({ _id: new ObjectId(booking.productId) });
             if (!product) return res.status(404).send({ message: "Product not found" });
 
-            // min / max quantity validation
             const minOrder = product.minimumOrder ?? product.minOrder ?? 1;
             const available = product.availableQty ?? product.quantity ?? 0;
 
@@ -124,15 +108,12 @@ async function run() {
                 return res.status(400).send({ message: `Order quantity cannot exceed available quantity (${available})` });
             }
 
-            // prepare booking
             booking.trackingId = generateTrackingId();
             booking.status = "pending";
             booking.createdAt = new Date();
 
-            // insert booking
             const result = await bookingsCollection.insertOne(booking);
 
-            // decrement available quantity
             await productsCollection.updateOne(
                 { _id: new ObjectId(booking.productId) },
                 { $inc: { availableQty: -booking.orderQty } }
