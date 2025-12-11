@@ -59,7 +59,6 @@ async function run() {
     const bookingsCollection = db.collection('bookings');
     const trackingsCollection = db.collection('trackings');
 
-
     // ---------------- ADMIN CHECK ----------------
     const verifyAdmin = async (req, res, next) => {
         const email = req.decoded_email;
@@ -70,126 +69,76 @@ async function run() {
         next();
     };
 
-    app.post("/users", async(req, res) => {
+    // -------------------- USERS API --------------------
+    app.post("/users", async (req, res) => {
         const userData = req.body
         const result = await userCollection.insertOne(userData)
         res.send(result);
     })
 
-    // -------------------- USERS API --------------------
-    // Get all users (Admin only) with search, filter, pagination
-    app.get('/users/admin', verifyFBToken, verifyAdmin, async (req, res) => {
-        const { page = 1, limit = 10, search = "", role = "" } = req.query;
-        const query = {};
-        if (search) query.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { email: { $regex: search, $options: 'i' } }
-        ];
-        if (role) query.role = role;
-
-        const users = await userCollection.find(query)
-            .skip((page - 1) * limit)
-            .limit(parseInt(limit))
-            .toArray();
-
-        const total = await userCollection.countDocuments(query);
-        res.send({ users, total });
-    });
-
-    // Update user role or suspend reason
-    app.patch('/users/admin/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-        const id = req.params.id;
-        const { role, suspendReason } = req.body;
-
-        const updateDoc = {};
-        if (role) updateDoc.role = role;
-        if (suspendReason) updateDoc.suspendReason = suspendReason;
-
-        const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
-        res.send(result);
-    });
-
     // -------------------- PRODUCTS API --------------------
-    // Get all products
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
-        console.log(result);
         res.send(result);
     });
 
-    // Get single product
     app.get('/products/:id', async (req, res) => {
         const id = req.params.id;
         const product = await productsCollection.findOne({ _id: new ObjectId(id) });
         res.send(product);
     });
 
-    // Admin/Manager: get all products with pagination, search, filter
-    app.get('/products/admin', verifyFBToken, async (req, res) => {
-        const { page = 1, limit = 10, search = "", category = "" } = req.query;
-        const query = {};
-        if (search) query.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { description: { $regex: search, $options: 'i' } }
-        ];
-        if (category) query.category = category;
-
-        const products = await productsCollection.find(query)
-            .skip((page - 1) * limit)
-            .limit(parseInt(limit))
-            .toArray();
-
-        const total = await productsCollection.countDocuments(query);
-        res.send({ products, total });
-    });
-
-    // Add product (Manager only)
-    app.post('/products', verifyFBToken, async (req, res) => {
-        const email = req.decoded_email;
-        const user = await userCollection.findOne({ email });
-        if (!user || user.role !== 'manager') return res.status(403).send({ message: 'forbidden' });
-
-        const product = req.body;
-        product.createdBy = email;
-        product.createdAt = new Date();
-        const result = await productsCollection.insertOne(product);
-        res.send(result);
-    });
-
-    // Update product
-    app.patch('/products/:id', verifyFBToken, async (req, res) => {
-        const id = req.params.id;
-        const updateDoc = req.body;
-        const result = await productsCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
-        res.send(result);
-    });
-
-    // Delete product
-    app.delete('/products/:id', verifyFBToken, async (req, res) => {
-        const id = req.params.id;
-        const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
-        res.send(result);
-    });
-
     // -------------------- BOOKINGS API --------------------
-    // Create booking
     app.post('/bookings', verifyFBToken, async (req, res) => {
         try {
             const booking = req.body;
-            if (!booking.userEmail || !booking.productId || !booking.orderQty) {
+            const userEmail = booking.userEmail;
+
+            // check required fields
+            if (!userEmail || !booking.productId || !booking.orderQty) {
                 return res.status(400).send({ message: 'Missing required booking fields' });
             }
 
-            // Check if user suspended
-            const user = await userCollection.findOne({ email: booking.userEmail });
-            if (user?.suspendReason) return res.status(403).send({ message: 'You are suspended: ' + user.suspendReason });
+            // fetch user
+            const user = await userCollection.findOne({ email: userEmail });
+            if (!user) return res.status(404).send({ message: "User not found" });
 
+            // check if suspended
+            if (user.suspendReason) return res.status(403).send({ message: 'You are suspended: ' + user.suspendReason });
+
+            // check role (only buyer)
+            if (user.role !== 'buyer') return res.status(403).send({ message: 'Only buyers can place orders' });
+
+            // fetch product
+            const product = await productsCollection.findOne({ _id: new ObjectId(booking.productId) });
+            if (!product) return res.status(404).send({ message: "Product not found" });
+
+            // min / max quantity validation
+            const minOrder = product.minimumOrder ?? product.minOrder ?? 1;
+            const available = product.availableQty ?? product.quantity ?? 0;
+
+            if (booking.orderQty < minOrder) {
+                return res.status(400).send({ message: `Order quantity cannot be less than ${minOrder}` });
+            }
+            if (booking.orderQty > available) {
+                return res.status(400).send({ message: `Order quantity cannot exceed available quantity (${available})` });
+            }
+
+            // prepare booking
             booking.trackingId = generateTrackingId();
             booking.status = "pending";
             booking.createdAt = new Date();
 
+            // insert booking
             const result = await bookingsCollection.insertOne(booking);
 
+            // decrement available quantity
+            await productsCollection.updateOne(
+                { _id: new ObjectId(booking.productId) },
+                { $inc: { availableQty: -booking.orderQty } }
+            );
+
+            // create tracking record
             await trackingsCollection.insertOne({
                 trackingId: booking.trackingId,
                 status: "booking_created",
@@ -214,7 +163,7 @@ async function run() {
         res.send(bookings);
     });
 
-    // Admin/Manager: get all bookings with search, filter, pagination
+    // Admin/Manager: get all bookings
     app.get('/bookings/admin', verifyFBToken, async (req, res) => {
         const { page = 1, limit = 10, status = "", search = "" } = req.query;
         const query = {};
