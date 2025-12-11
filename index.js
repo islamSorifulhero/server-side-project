@@ -138,7 +138,6 @@ async function run() {
                 { $inc: { availableQty: -booking.orderQty } }
             );
 
-            // create tracking record
             await trackingsCollection.insertOne({
                 trackingId: booking.trackingId,
                 status: "booking_created",
@@ -156,14 +155,12 @@ async function run() {
         }
     });
 
-    // Get bookings for logged-in user
     app.get('/bookings', verifyFBToken, async (req, res) => {
         const email = req.decoded_email;
         const bookings = await bookingsCollection.find({ userEmail: email }).sort({ createdAt: -1 }).toArray();
         res.send(bookings);
     });
 
-    // Admin/Manager: get all bookings
     app.get('/bookings/admin', verifyFBToken, async (req, res) => {
         const { page = 1, limit = 10, status = "", search = "" } = req.query;
         const query = {};
@@ -183,14 +180,12 @@ async function run() {
         res.send({ bookings, total });
     });
 
-    // -------------------- TRACKING API --------------------
     app.get('/trackings/:trackingId', verifyFBToken, async (req, res) => {
         const trackingId = req.params.trackingId;
         const trackings = await trackingsCollection.find({ trackingId }).sort({ createdAt: 1 }).toArray();
         res.send(trackings);
     });
 
-    // -------------------- CREATE STRIPE CHECKOUT --------------------
     app.post('/create-checkout-session', async (req, res) => {
         try {
             const { cost, bookingId, productTitle, userEmail } = req.body;
@@ -227,7 +222,6 @@ async function run() {
 
 run().catch(console.error);
 
-// -------------------- ROOT ROUTE --------------------
 app.get('/', (req, res) => {
     res.send('Server is running!');
 });
