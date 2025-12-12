@@ -119,6 +119,25 @@ async function run() {
         }
     });
 
+    // Add Product Route (verifyManager ensures only managers/admins can add)
+    app.post('/products', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const productData = req.body;
+            productData.createdAt = new Date();
+            // Ensure quantity fields are stored as numbers
+            productData.price = parseFloat(productData.price) || 0;
+            productData.availableQty = parseInt(productData.availableQty) || 0;
+            productData.minimumOrder = parseInt(productData.minimumOrder) || 1;
+
+            const result = await productsCollection.insertOne(productData);
+            res.send(result);
+        } catch (err) {
+            console.error("Error adding product:", err);
+            res.status(500).send({ message: "Failed to add product" });
+        }
+    });
+
+
     app.delete('/products/:id', verifyFBToken, verifyManager, async (req, res) => {
         try {
             const id = req.params.id;
@@ -133,7 +152,7 @@ async function run() {
     app.post('/bookings', verifyFBToken, async (req, res) => {
         try {
             const booking = req.body;
-            
+
             const userEmail = booking.userEmail;
 
             if (!userEmail || !booking.productId || !booking.orderQty) {
@@ -253,11 +272,16 @@ async function run() {
         res.send(trackings);
     });
 
+
     app.post('/create-checkout-session', async (req, res) => {
         try {
             const { cost, bookingId, productTitle, userEmail } = req.body;
-            if (!cost || !bookingId || !productTitle || !userEmail) {
-                return res.status(400).send({ message: 'Missing required fields' });
+
+            // ✅ FIX: cost কে নিশ্চিতভাবে সংখ্যায় রূপান্তর করুন এবং ভ্যালিডেট করুন
+            const safeCost = parseFloat(cost);
+
+            if (isNaN(safeCost) || safeCost <= 0) {
+                return res.status(400).send({ message: 'Invalid or missing cost for payment.' });
             }
 
             const session = await stripe.checkout.sessions.create({
@@ -267,7 +291,8 @@ async function run() {
                         price_data: {
                             currency: 'usd',
                             product_data: { name: productTitle },
-                            unit_amount: cost * 100,
+                            // ✅ FIX: cost কে সেন্টে রূপান্তর করে পূর্ণ সংখ্যায় নিতে হবে
+                            unit_amount: Math.round(safeCost * 100),
                         },
                         quantity: 1,
                     }
@@ -283,6 +308,11 @@ async function run() {
             res.status(500).send({ message: "Stripe session failed" });
         }
     });
+
+
+
+
+
 
     console.log("Database connected!");
 }
