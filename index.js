@@ -71,7 +71,6 @@ async function run() {
     app.get('/users/:email', verifyFBToken, async (req, res) => {
         try {
             const email = req.params.email;
-            // Security check: Only allow access to own profile (or admin, if needed)
             if (req.decoded_email !== email) {
                 return res.status(403).send({ message: "Forbidden: Cannot access other user profiles." });
             }
@@ -90,6 +89,15 @@ async function run() {
         }
     });
 
+    const verifyManager = async (req, res, next) => {
+        const email = req.decoded_email;
+        const user = await userCollection.findOne({ email });
+        if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
+            return res.status(403).send({ message: 'forbidden access' });
+        }
+        next();
+    };
+
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
         res.send(result);
@@ -101,9 +109,31 @@ async function run() {
         res.send(product);
     });
 
+    app.get('/products/manager', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const products = await productsCollection.find().sort({ createdAt: -1 }).toArray();
+            res.send(products);
+        } catch (err) {
+            console.error("Error fetching manager products:", err);
+            res.status(500).send({ message: "Internal server error." });
+        }
+    });
+
+    app.delete('/products/:id', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
+            res.send(result);
+        } catch (err) {
+            console.error("Error deleting product:", err);
+            res.status(500).send({ message: "Internal server error." });
+        }
+    });
+
     app.post('/bookings', verifyFBToken, async (req, res) => {
         try {
             const booking = req.body;
+            
             const userEmail = booking.userEmail;
 
             if (!userEmail || !booking.productId || !booking.orderQty) {
@@ -162,6 +192,40 @@ async function run() {
         const email = req.decoded_email;
         const bookings = await bookingsCollection.find({ userEmail: email }).sort({ createdAt: -1 }).toArray();
         res.send(bookings);
+    });
+
+    app.get('/bookings/:id', verifyFBToken, async (req, res) => {
+        try {
+            const id = req.params.id;
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Booking ID format." });
+            }
+
+            const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+
+            if (!booking) {
+                return res.status(404).send({ message: "Booking not found." });
+            }
+
+            if (req.decoded_email !== booking.userEmail) {
+
+                const user = await userCollection.findOne({ email: req.decoded_email });
+                if (user.role === 'buyer') {
+                    return res.status(403).send({ message: "Forbidden access to this booking." });
+                }
+            }
+
+            const trackingHistory = await trackingsCollection.find({ trackingId: booking.trackingId }).sort({ createdAt: 1 }).toArray();
+
+            res.send({
+                ...booking,
+                tracking: trackingHistory
+            });
+
+        } catch (err) {
+            console.error("Error fetching single booking:", err);
+            res.status(500).send({ message: "Internal server error" });
+        }
     });
 
     app.get('/bookings/admin', verifyFBToken, async (req, res) => {
