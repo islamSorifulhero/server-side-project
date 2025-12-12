@@ -19,19 +19,9 @@ admin.initializeApp({
 app.use(express.json());
 app.use(cors());
 
-const verifyFBToken = async (req, res, next) => {
-    const token = req.headers.authorization;
-    if (!token) return res.status(401).send({ message: 'unauthorized access' });
 
-    try {
-        const idToken = token.split(' ')[1];
-        const decoded = await admin.auth().verifyIdToken(idToken);
-        req.decoded_email = decoded.email;
-        next();
-    } catch (err) {
-        return res.status(401).send({ message: 'unauthorized access' });
-    }
-};
+
+
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.maurhd8.mongodb.net/?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
@@ -45,8 +35,9 @@ function generateTrackingId() {
     return `${prefix}-${date}-${random}`;
 }
 
+
+
 async function run() {
-    await client.connect();
     const db = client.db('simpleUser');
     const userCollection = db.collection('users');
     const productsCollection = db.collection('products');
@@ -57,6 +48,34 @@ async function run() {
         const email = req.decoded_email;
         const user = await userCollection.findOne({ email });
         if (!user || user.role !== 'admin') {
+            return res.status(403).send({ message: 'forbidden access' });
+        }
+        next();
+    };
+
+    const verifyFBToken = async (req, res, next) => {
+        const token = req.headers.authorization;
+        if (!token) return res.status(401).send({ message: 'unauthorized access' });
+
+        try {
+            const idToken = token.split(' ')[1];
+            const decoded = await admin.auth().verifyIdToken(idToken);
+            req.decoded_email = decoded.email;
+            next();
+
+        } catch (err) {
+            return res.status(401).send({ message: 'unauthorized access' });
+        }
+
+    };
+
+    const verifyManager = async (req, res, next) => {
+        console.log("test");
+        const email = req.decoded_email;
+        console.log(email);
+        const user = await userCollection.findOne({ email });
+        console.log(user);
+        if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
             return res.status(403).send({ message: 'forbidden access' });
         }
         next();
@@ -89,14 +108,7 @@ async function run() {
         }
     });
 
-    const verifyManager = async (req, res, next) => {
-        const email = req.decoded_email;
-        const user = await userCollection.findOne({ email });
-        if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
-            return res.status(403).send({ message: 'forbidden access' });
-        }
-        next();
-    };
+
 
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
@@ -109,9 +121,10 @@ async function run() {
         res.send(product);
     });
 
-    app.get('/products/manager', verifyFBToken, verifyManager, async (req, res) => {
+    app.get('/manager/get-manager', verifyFBToken, verifyManager, async (req, res) => {
         try {
             const products = await productsCollection.find().sort({ createdAt: -1 }).toArray();
+            console.log(products);
             res.send(products);
         } catch (err) {
             console.error("Error fetching manager products:", err);
@@ -119,12 +132,10 @@ async function run() {
         }
     });
 
-    // Add Product Route (verifyManager ensures only managers/admins can add)
     app.post('/products', verifyFBToken, verifyManager, async (req, res) => {
         try {
             const productData = req.body;
             productData.createdAt = new Date();
-            // Ensure quantity fields are stored as numbers
             productData.price = parseFloat(productData.price) || 0;
             productData.availableQty = parseInt(productData.availableQty) || 0;
             productData.minimumOrder = parseInt(productData.minimumOrder) || 1;
@@ -213,7 +224,7 @@ async function run() {
         res.send(bookings);
     });
 
-    app.get('/bookings/:id', verifyFBToken, async (req, res) => {
+    app.get('/get-booking/:id', verifyFBToken, async (req, res) => {
         try {
             const id = req.params.id;
             if (!ObjectId.isValid(id)) {
@@ -277,22 +288,21 @@ async function run() {
         try {
             const { cost, bookingId, productTitle, userEmail } = req.body;
 
-            // ✅ FIX: cost কে নিশ্চিতভাবে সংখ্যায় রূপান্তর করুন এবং ভ্যালিডেট করুন
             const safeCost = parseFloat(cost);
 
             if (isNaN(safeCost) || safeCost <= 0) {
                 return res.status(400).send({ message: 'Invalid or missing cost for payment.' });
             }
 
+            const amountInCents = Math.max(50, Math.round(safeCost * 100));
+
             const session = await stripe.checkout.sessions.create({
-                payment_method_types: ['card'],
                 line_items: [
                     {
                         price_data: {
                             currency: 'usd',
                             product_data: { name: productTitle },
-                            // ✅ FIX: cost কে সেন্টে রূপান্তর করে পূর্ণ সংখ্যায় নিতে হবে
-                            unit_amount: Math.round(safeCost * 100),
+                            unit_amount: amountInCents,
                         },
                         quantity: 1,
                     }
@@ -302,14 +312,13 @@ async function run() {
                 cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
             });
 
+
             res.send({ url: session.url });
         } catch (err) {
             console.log("STRIPE ERROR:", err);
             res.status(500).send({ message: "Stripe session failed" });
         }
     });
-
-
 
 
 
