@@ -19,8 +19,21 @@ admin.initializeApp({
 app.use(express.json());
 app.use(cors());
 
+const verifyFBToken = async (req, res, next) => {
+    const token = req.headers.authorization;
+    if (!token) return res.status(401).send({ message: 'unauthorized access' });
 
+    try {
+        const idToken = token.split(' ')[1];
+        const decoded = await admin.auth().verifyIdToken(idToken);
+        req.decoded_email = decoded.email;
+        next();
 
+    } catch (err) {
+        return res.status(401).send({ message: 'unauthorized access' });
+    }
+
+};
 
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.maurhd8.mongodb.net/?retryWrites=true&w=majority`;
@@ -38,6 +51,7 @@ function generateTrackingId() {
 
 
 async function run() {
+    await client.connect();
     const db = client.db('simpleUser');
     const userCollection = db.collection('users');
     const productsCollection = db.collection('products');
@@ -53,28 +67,9 @@ async function run() {
         next();
     };
 
-    const verifyFBToken = async (req, res, next) => {
-        const token = req.headers.authorization;
-        if (!token) return res.status(401).send({ message: 'unauthorized access' });
-
-        try {
-            const idToken = token.split(' ')[1];
-            const decoded = await admin.auth().verifyIdToken(idToken);
-            req.decoded_email = decoded.email;
-            next();
-
-        } catch (err) {
-            return res.status(401).send({ message: 'unauthorized access' });
-        }
-
-    };
-
     const verifyManager = async (req, res, next) => {
-        console.log("test");
         const email = req.decoded_email;
-        console.log(email);
         const user = await userCollection.findOne({ email });
-        console.log(user);
         if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
             return res.status(403).send({ message: 'forbidden access' });
         }
@@ -109,7 +104,6 @@ async function run() {
     });
 
 
-
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
         res.send(result);
@@ -124,7 +118,6 @@ async function run() {
     app.get('/manager/get-manager', verifyFBToken, verifyManager, async (req, res) => {
         try {
             const products = await productsCollection.find().sort({ createdAt: -1 }).toArray();
-            console.log(products);
             res.send(products);
         } catch (err) {
             console.error("Error fetching manager products:", err);
@@ -307,6 +300,10 @@ async function run() {
                         quantity: 1,
                     }
                 ],
+                metadata: {
+                    bookingId: bookingId,
+                    userEmail: userEmail
+                },
                 mode: "payment",
                 success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
                 cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
@@ -315,12 +312,70 @@ async function run() {
 
             res.send({ url: session.url });
         } catch (err) {
-            console.log("STRIPE ERROR:", err);
+            console.log("STRIPE ERROR:", err.raw?.message || err.message || err);
             res.status(500).send({ message: "Stripe session failed" });
         }
     });
 
 
+    app.get('/payment-success', verifyFBToken, async (req, res) => {
+        const sessionId = req.query.session_id;
+
+        if (!sessionId) {
+            return res.status(400).send({ message: "Session ID missing." });
+        }
+
+        try {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+            if (session.payment_status !== 'paid') {
+                return res.status(400).send({ success: false, message: "Payment not completed or pending." });
+            }
+
+            const bookingId = session.metadata.bookingId;
+
+            if (!bookingId) {
+                return res.status(404).send({ message: "Booking ID not found in Stripe metadata." });
+            }
+
+
+            if (!ObjectId.isValid(bookingId)) {
+                return res.status(400).send({ message: "Invalid Booking ID from Stripe metadata." });
+            }
+
+            const updateResult = await bookingsCollection.updateOne(
+                { _id: new ObjectId(bookingId) },
+                {
+                    $set: {
+                        status: 'paid',
+                        transactionId: sessionId,
+                        paymentMethod: 'Stripe'
+                    }
+                }
+            );
+
+            const booking = await bookingsCollection.findOne({ _id: new ObjectId(bookingId) });
+            if (booking && booking.trackingId) {
+                await trackingsCollection.insertOne({
+                    trackingId: booking.trackingId,
+                    status: "payment_received",
+                    createdAt: new Date(),
+                    note: `Payment via Stripe, Transaction ID: ${sessionId}`
+                });
+            }
+
+            res.send({
+                success: true,
+                message: "Payment successful and booking status updated.",
+                transactionId: sessionId,
+                trackingId: booking?.trackingId || 'N/A'
+            });
+
+        } catch (err) {
+            console.error("Payment Success Verification Error:", err);
+            res.status(500).send({ message: "Failed to verify payment details." });
+        }
+    });
 
 
     console.log("Database connected!");
