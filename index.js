@@ -68,6 +68,28 @@ async function run() {
         res.send(result);
     })
 
+    app.get('/users/:email', verifyFBToken, async (req, res) => {
+        try {
+            const email = req.params.email;
+            // Security check: Only allow access to own profile (or admin, if needed)
+            if (req.decoded_email !== email) {
+                return res.status(403).send({ message: "Forbidden: Cannot access other user profiles." });
+            }
+
+            const user = await userCollection.findOne({ email });
+
+            if (!user) {
+                return res.status(404).send({ message: "User not found in database." });
+            }
+
+            res.send(user);
+
+        } catch (err) {
+            console.error("Error fetching user profile:", err);
+            res.status(500).send({ message: "Internal server error" });
+        }
+    });
+
     app.get('/products', async (req, res) => {
         const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
         res.send(result);
