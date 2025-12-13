@@ -348,6 +348,50 @@ async function run() {
         }
     });
 
+
+    app.patch('/bookings/:id/tracking', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const { status, location, note } = req.body;
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Order ID." });
+            }
+
+            const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+            if (!booking) {
+                return res.status(404).send({ modifiedCount: 0, message: "Booking not found." });
+            }
+
+            const updateDoc = {};
+            if (status) {
+                updateDoc.$set = { status: status.toLowerCase() };
+                if (status.toLowerCase() === 'shipped') {
+                } else if (status.toLowerCase() === 'delivered') {
+                }
+            }
+
+            const updateResult = await bookingsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                updateDoc
+            );
+
+            if (booking.trackingId) {
+                await trackingsCollection.insertOne({
+                    trackingId: booking.trackingId,
+                    status: status?.toLowerCase() || 'in_progress',
+                    location: location || 'Unknown Location',
+                    note: note || '',
+                    createdAt: new Date()
+                });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("Tracking Update Error:", err);
+            res.status(500).send({ message: "Failed to update tracking." });
+        }
+    });
+
     app.get('/trackings/:trackingId', verifyFBToken, async (req, res) => {
         const trackingId = req.params.trackingId;
         const trackings = await trackingsCollection.find({ trackingId }).sort({ createdAt: 1 }).toArray();
