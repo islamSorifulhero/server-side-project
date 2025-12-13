@@ -270,6 +270,84 @@ async function run() {
         res.send({ bookings, total });
     });
 
+    app.patch('/bookings/:id/approve', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Order ID." });
+            }
+
+            const updateResult = await bookingsCollection.updateOne(
+                { _id: new ObjectId(id), status: { $ne: 'paid' } },
+                { $set: { status: 'approved' } }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+                return res.status(404).send({ modifiedCount: 0, message: "Order not found or already approved/paid." });
+            }
+
+            const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+            if (booking && booking.trackingId) {
+                await trackingsCollection.insertOne({
+                    trackingId: booking.trackingId,
+                    status: "order_approved",
+                    createdAt: new Date(),
+                    note: "Order confirmed and approved by manager."
+                });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("Approval Error:", err);
+            res.status(500).send({ message: "Failed to approve order." });
+        }
+    });
+
+
+    app.patch('/bookings/:id/reject', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const { reason } = req.body;
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Order ID." });
+            }
+
+            const bookingToReject = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+
+            if (!bookingToReject) {
+                return res.status(404).send({ modifiedCount: 0, message: "Order not found." });
+            }
+
+            const updateResult = await bookingsCollection.updateOne(
+                { _id: new ObjectId(id), status: { $nin: ['paid', 'shipped', 'rejected'] } },
+                { $set: { status: 'rejected', rejectionReason: reason || "No reason provided." } }
+            );
+
+            if (updateResult.modifiedCount > 0) {
+                await productsCollection.updateOne(
+                    { _id: new ObjectId(bookingToReject.productId) },
+                    { $inc: { availableQty: bookingToReject.orderQty } }
+                );
+
+                if (bookingToReject.trackingId) {
+                    await trackingsCollection.insertOne({
+                        trackingId: bookingToReject.trackingId,
+                        status: "order_rejected",
+                        createdAt: new Date(),
+                        note: `Order rejected by manager. Reason: ${reason || 'N/A'}`
+                    });
+                }
+            } else {
+                return res.status(400).send({ modifiedCount: 0, message: "Order cannot be rejected (already rejected, paid, or shipped)." });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("Rejection Error:", err);
+            res.status(500).send({ message: "Failed to reject order." });
+        }
+    });
+
     app.get('/trackings/:trackingId', verifyFBToken, async (req, res) => {
         const trackingId = req.params.trackingId;
         const trackings = await trackingsCollection.find({ trackingId }).sort({ createdAt: 1 }).toArray();
