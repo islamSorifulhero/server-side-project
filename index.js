@@ -105,7 +105,15 @@ async function run() {
 
 
     app.get('/products', async (req, res) => {
-        const result = await productsCollection.find().sort({ createdAt: -1 }).toArray();
+        const limit = parseInt(req.query.limit);
+
+        let query = productsCollection.find().sort({ createdAt: -1 });
+
+        if (!isNaN(limit) && limit > 0) {
+            query = query.limit(limit);
+        }
+
+        const result = await query.toArray();
         res.send(result);
     });
 
