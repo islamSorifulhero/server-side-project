@@ -363,6 +363,57 @@ async function run() {
         res.send(bookings);
     });
 
+
+    app.delete('/bookings/:id', verifyFBToken, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const userEmail = req.decoded_email;
+
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Booking ID format." });
+            }
+
+            const bookingToDelete = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+
+            if (!bookingToDelete) {
+                return res.status(404).send({ message: "Booking not found." });
+            }
+
+            if (bookingToDelete.userEmail !== userEmail) {
+                return res.status(403).send({ message: "Forbidden: You can only cancel your own orders." });
+            }
+
+            if (bookingToDelete.status !== 'pending') {
+                return res.status(400).send({ message: `Cannot cancel order with status: ${bookingToDelete.status}.` });
+            }
+
+            const deleteResult = await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
+
+            if (deleteResult.deletedCount === 0) {
+                return res.status(404).send({ message: "Order not found or already deleted." });
+            }
+
+            await productsCollection.updateOne(
+                { _id: new ObjectId(bookingToDelete.productId) },
+                { $inc: { availableQty: bookingToDelete.orderQty } }
+            );
+
+            if (bookingToDelete.trackingId) {
+                await trackingsCollection.insertOne({
+                    trackingId: bookingToDelete.trackingId,
+                    status: "order_cancelled_by_user",
+                    createdAt: new Date(),
+                    note: `Order cancelled by user: ${userEmail}`
+                });
+            }
+
+            res.send({ deletedCount: 1, message: "Order cancelled successfully." });
+        } catch (err) {
+            console.error("Order Cancellation Error:", err);
+            res.status(500).send({ message: "Failed to cancel order." });
+        }
+    });
+
     app.get('/get-booking/:id', verifyFBToken, async (req, res) => {
         try {
             const id = req.params.id;
