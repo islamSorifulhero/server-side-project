@@ -397,9 +397,16 @@ async function run() {
         }
     });
 
-    app.get('/bookings/admin', verifyFBToken, async (req, res) => {
+    app.get('/bookings/admin', verifyFBToken, verifyAdmin, async (req, res) => {
+        const user = await userCollection.findOne({ email: req.decoded_email });
+        if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
+
         const { page = 1, limit = 10, status = "", search = "" } = req.query;
         const query = {};
+
+
         if (status) query.status = status;
         if (search) query.$or = [
             { productTitle: { $regex: search, $options: 'i' } },
