@@ -397,7 +397,7 @@ async function run() {
         }
     });
 
-    app.get('/bookings/admin', verifyFBToken, verifyAdmin, async (req, res) => {
+    app.get('/bookings/admin', verifyFBToken, verifyManager, async (req, res) => {
         const user = await userCollection.findOne({ email: req.decoded_email });
         if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
             return res.status(403).send({ message: 'Forbidden access' });
