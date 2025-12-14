@@ -60,8 +60,12 @@ async function run() {
 
     const verifyAdmin = async (req, res, next) => {
         const email = req.decoded_email;
+        console.log("Checking Admin Email:", email);
         const user = await userCollection.findOne({ email });
+        console.log("Admin check failed for:", email);
+
         if (!user || user.role !== 'admin') {
+            console.log("Admin check failed for:", email);
             return res.status(403).send({ message: 'forbidden access' });
         }
         next();
@@ -100,6 +104,70 @@ async function run() {
         } catch (err) {
             console.error("Error fetching user profile:", err);
             res.status(500).send({ message: "Internal server error" });
+        }
+    });
+
+
+    app.get('/get-users/all', verifyFBToken, verifyAdmin, async (req, res) => {
+        try {
+            const searchText = req.query.search || "";
+            const query = {};
+            if (searchText) {
+                query.email = { $regex: searchText, $options: 'i' };
+            }
+
+            const users = await userCollection.find(query).sort({ role: 1, email: 1 }).toArray();
+
+            console.log(`Users fetched for Manage Users (Search: ${searchText}): ${users.length}`);
+            res.send(users);
+        } catch (err) {
+            console.error("Error fetching all users:", err);
+            res.status(500).send({ message: "Failed to fetch users." });
+        }
+    });
+
+
+    app.patch('/users/update/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const { role, suspendReason } = req.body;
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid User ID." });
+            }
+
+            const updateDoc = {};
+
+            if (role && ['buyer', 'manager', 'admin'].includes(role)) {
+                updateDoc.role = role;
+            }
+
+            if (typeof suspendReason === 'string') {
+                if (suspendReason.length > 0) {
+                    updateDoc.status = 'suspended';
+                    updateDoc.suspendReason = suspendReason;
+                } else {
+                    updateDoc.status = 'approved';
+                    updateDoc.suspendReason = null;
+                }
+            }
+
+            if (Object.keys(updateDoc).length === 0) {
+                return res.status(400).send({ message: "No valid update parameters provided." });
+            }
+
+            const updateResult = await userCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: updateDoc }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+                return res.status(404).send({ modifiedCount: 0, message: "User not found or no changes made." });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("User update error:", err);
+            res.status(500).send({ message: "Failed to update user role/status." });
         }
     });
 
