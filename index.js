@@ -229,6 +229,76 @@ async function run() {
         }
     });
 
+    app.get('/get-products', verifyFBToken, verifyManager, async (req, res) => {
+        const limit = parseInt(req.query.limit);
+
+        let query = productsCollection.find().sort({ createdAt: -1 });
+
+        if (!isNaN(limit) && limit > 0) {
+            query = query.limit(limit);
+        }
+
+        const result = await query.toArray();
+        res.send(result);
+    });
+
+
+    app.patch('/products/:id/toggle-home', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const { showOnHome } = req.body;
+
+            if (!ObjectId.isValid(id) || typeof showOnHome !== 'boolean') {
+                return res.status(400).send({ message: "Invalid Product ID or showOnHome value." });
+            }
+
+            const updateResult = await productsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { showOnHome: showOnHome } }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+                return res.status(404).send({ modifiedCount: 0, message: "Product not found or no change in status." });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("Toggle Home Error:", err);
+            res.status(500).send({ message: "Failed to toggle 'Show on Home'." });
+        }
+    });
+
+
+    app.patch('/get-products/:id', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const id = req.params.id;
+            const updateData = req.body;
+
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid Product ID." });
+            }
+
+            const setDoc = { ...updateData };
+
+            if (setDoc.price !== undefined) setDoc.price = parseFloat(setDoc.price);
+            if (setDoc.availableQty !== undefined) setDoc.availableQty = parseInt(setDoc.availableQty);
+
+            const updateResult = await productsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: setDoc }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+                return res.status(404).send({ modifiedCount: 0, message: "Product not found or no changes made." });
+            }
+
+            res.send(updateResult);
+        } catch (err) {
+            console.error("Product update error:", err);
+            res.status(500).send({ message: "Failed to update product." });
+        }
+    });
+
     app.post('/bookings', verifyFBToken, async (req, res) => {
         try {
             const booking = req.body;
