@@ -483,7 +483,7 @@ async function run() {
 
             const updateResult = await bookingsCollection.updateOne(
                 { _id: new ObjectId(id), status: { $ne: 'paid' } },
-                { $set: { status: 'approved' } }
+                { $set: { status: 'approved', approvedAt: new Date() } }
             );
 
             if (updateResult.modifiedCount === 0) {
