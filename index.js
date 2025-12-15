@@ -201,6 +201,19 @@ async function run() {
         }
     });
 
+    app.get('/manager/products', verifyFBToken, verifyManager, async (req, res) => {
+        try {
+            const email = req.decoded_email;
+
+            const products = await productsCollection.find({ managerEmail: email }).toArray();
+
+            res.send(products);
+        } catch (err) {
+            console.error("Error fetching manager products:", err);
+            res.status(500).send({ message: "Internal server error" });
+        }
+    });
+
     app.post('/products', verifyFBToken, verifyManager, async (req, res) => {
         try {
             const productData = req.body;
