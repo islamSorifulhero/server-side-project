@@ -46,7 +46,7 @@ function generateTrackingId() {
 }
 
 async function run() {
-    await client.connect();
+    // await client.connect();
     const db = client.db('simpleUser');
     const userCollection = db.collection('users');
     const productsCollection = db.collection('products');
