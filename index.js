@@ -360,32 +360,32 @@ async function run() {
     });
 
     app.get('/get-booking/:id', verifyFBToken, async (req, res) => {
-        try {
-            const id = req.params.id;
-            if (!ObjectId.isValid(id)) {
-                return res.status(400).send({ message: "Invalid Booking ID format." });
-            }
-            const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
-            if (!booking) {
-                return res.status(404).send({ message: "Booking not found." });
-            }
-            if (req.decoded_email !== booking.userEmail) {
-                const user = await userCollection.findOne({ email: req.decoded_email });
-                if (user.role === 'buyer') {
-                    return res.status(403).send({ message: "Forbidden access to this booking." });
-                }
-            }
-            const trackingHistory = await trackingsCollection.find({ trackingId: booking.trackingId }).sort({ createdAt: 1 }).toArray();
-            res.send({
-                ...booking,
-                tracking: trackingHistory
-            });
-
-        } catch (err) {
-            console.error("Error fetching single booking:", err);
-            res.status(500).send({ message: "Internal server error" });
+    try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid Booking ID format." });
         }
-    });
+        const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+        if (!booking) {
+            return res.status(404).send({ message: "Booking not found." });
+        }
+        const user = await userCollection.findOne({ email: req.decoded_email });
+        if (req.decoded_email !== booking.userEmail && user.role === 'buyer') {
+            return res.status(403).send({ message: "Forbidden access." });
+        }
+        const trackingHistory = await trackingsCollection
+            .find({ trackingId: booking.trackingId })
+            .sort({ createdAt: 1 })
+            .toArray();
+        res.send({
+            ...booking,
+            tracking: trackingHistory
+        });
+    } catch (err) {
+        console.error("Error fetching booking details:", err);
+        res.status(500).send({ message: "Internal server error" });
+    }
+});
 
     app.get('/bookings/admin', verifyFBToken, verifyManager, async (req, res) => {
         const user = await userCollection.findOne({ email: req.decoded_email });
